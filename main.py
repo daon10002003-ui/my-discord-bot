@@ -7,7 +7,7 @@ import json
 import os
 
 # --- 設定項目 ---
-TOKEN = "MTUxMTczMDc5ODE3MDk5Njg1OA.GePZN6.44MdPTAAnCG4gAzIlryoArGlsgaxTUir9Nii7A"
+OKEN = os.getenv("DISCORD_TOKEN")
 # ---------------
 
 # レンダーでのファイル書き込みエラーを防ぐため、データはメモリ上に一時保存（再起動でリセットされますが安全に動きます）
