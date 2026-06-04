@@ -3,17 +3,15 @@ from discord.ext import commands
 from discord import app_commands
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-import os
 import json
+import os
 
 # --- 設定項目 ---
 TOKEN = "MTUxMTczMDc5ODE3MDk5Njg1OA.GePZN6.44MdPTAAnCG4gAzIlryoArGlsgaxTUir9Nii7A"
 # ---------------
 
-DATA_FILE = "vending_machine_data.json"
-
-# デフォルトの自販機データ
-DEFAULT_DATA = {
+# レンダーでのファイル書き込みエラーを防ぐため、データはメモリ上に一時保存（再起動でリセットされますが安全に動きます）
+_VENDING_DATA = {
     "config": {
         "title": "🛒 自動自販機パネル",
         "description": "下のボタンを押すと商品を購入（引き換え）できます。\n商品はDMですぐに届きます。",
@@ -22,16 +20,6 @@ DEFAULT_DATA = {
     },
     "items": {}
 }
-
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return json.loads(json.dumps(DEFAULT_DATA))
-
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
 
 # ★Renderの強制終了を防ぐための常時起動用Webサーバー
 class KeepAliveHandler(BaseHTTPRequestHandler):
@@ -58,7 +46,7 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
-# --- 購入用のボタン処理（提示されたコードの動きを完全に再現） ---
+# --- 購入用のボタン処理 ---
 class VendingButton(discord.ui.Button):
     def __init__(self, item_name: str):
         super().__init__(label=f"{item_name}を購入🎁", style=discord.ButtonStyle.green, custom_id=f"buy_{item_name}")
@@ -66,15 +54,15 @@ class VendingButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        data = load_data()
+        global _VENDING_DATA
         
         # 在庫チェック
-        if self.item_name not in data["items"] or not data["items"][self.item_name]:
+        if self.item_name not in _VENDING_DATA["items"] or not _VENDING_DATA["items"][self.item_name]:
             await interaction.followup.send(f"申し訳ありません、**{self.item_name}** は現在売り切れです。", ephemeral=True)
             return
 
-        stock_list = data["items"][self.item_name]
-        purchased_product = stock_list[0] # 先頭を確認
+        stock_list = _VENDING_DATA["items"][self.item_name]
+        purchased_product = stock_list[0]
 
         # 【無限機能】頭に「無限:」がついているか判定
         is_infinite = purchased_product.startswith("無限:")
@@ -83,7 +71,6 @@ class VendingButton(discord.ui.Button):
             display_product = purchased_product.replace("無限:", "", 1)
         else:
             display_product = stock_list.pop(0)
-            save_data(data)
 
         # 購入メッセージの作成
         success_embed = discord.Embed(
@@ -96,8 +83,8 @@ class VendingButton(discord.ui.Button):
             # 購入者のDMに送信
             await interaction.user.send(embed=success_embed)
             
-            # 実績記入案内（チャンネルが設定されていれば）
-            proof_id = data["config"].get("proof_channel_id")
+            # 実績記入案内
+            proof_id = _VENDING_DATA["config"].get("proof_channel_id")
             if proof_id:
                 proof_channel = interaction.guild.get_channel(int(proof_id))
                 if proof_channel:
@@ -110,11 +97,11 @@ class VendingButton(discord.ui.Button):
             # 通常在庫でDM失敗した場合は在庫を元に戻す
             if not is_infinite:
                 stock_list.insert(0, purchased_product)
-                save_data(data)
             return
 
-        # 実績用チャンネルまたは現在のチャンネルに購入ログ（緑色の埋め込み）を流す
+        # 実績ログの送信先判定
         target_channel = interaction.channel
+        proof_id = _VENDING_DATA["config"].get("proof_channel_id")
         if proof_id:
             chan = interaction.guild.get_channel(int(proof_id))
             if chan:
@@ -134,9 +121,8 @@ class VendingButton(discord.ui.Button):
 class VendingView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        data = load_data()
-        # 登録されている商品の数だけボタンを自動生成
-        for item_name in data["items"].keys():
+        global _VENDING_DATA
+        for item_name in _VENDING_DATA["items"].keys():
             self.add_item(VendingButton(item_name))
 
 # --- 管理リモコン（/自販機設定 のポップアップ用） ---
@@ -154,11 +140,10 @@ class ConfigView(discord.ui.View):
                 placeholder="例：無限:https://mediafire.com/... （無限在庫になります）"
             )
             async def on_submit(self, idx: discord.Interaction):
-                d = load_data()
-                if self.item_name.value not in d["items"]:
-                    d["items"][self.item_name.value] = []
-                d["items"][self.item_name.value].append(self.stock_content.value)
-                save_data(d)
+                global _VENDING_DATA
+                if self.item_name.value not in _VENDING_DATA["items"]:
+                    _VENDING_DATA["items"][self.item_name.value] = []
+                _VENDING_DATA["items"][self.item_name.value].append(self.stock_content.value)
                 await idx.response.send_message(f"📥 **{self.item_name.value}** に在庫を追加しました！", ephemeral=True)
         await interaction.response.send_modal(AddStockModal())
 
@@ -167,10 +152,9 @@ class ConfigView(discord.ui.View):
         class DelItemModal(discord.ui.Modal, title="商品の削除"):
             item_name = discord.ui.TextInput(label="削除したい商品名", placeholder="完全に消去する商品名を入力")
             async def on_submit(self, idx: discord.Interaction):
-                d = load_data()
-                if self.item_name.value in d["items"]:
-                    del d["items"][self.item_name.value]
-                    save_data(d)
+                global _VENDING_DATA
+                if self.item_name.value in _VENDING_DATA["items"]:
+                    del _VENDING_DATA["items"][self.item_name.value]
                     await idx.response.send_message(f"🗑️ **{self.item_name.value}** を完全に削除しました。", ephemeral=True)
                 else:
                     await idx.response.send_message("❌ その商品名は見つかりませんでした。", ephemeral=True)
@@ -181,9 +165,8 @@ class ConfigView(discord.ui.View):
         class TitleModal(discord.ui.Modal, title="タイトルの変更"):
             title = discord.ui.TextInput(label="パネルのタイトル", placeholder="例: 🛒 自動自販機パネル")
             async def on_submit(self, idx: discord.Interaction):
-                d = load_data()
-                d["config"]["title"] = self.title.value
-                save_data(d)
+                global _VENDING_DATA
+                _VENDING_DATA["config"]["title"] = self.title.value
                 await idx.response.send_message("✏️ タイトルを更新しました！パネルを再作成すると反映されます。", ephemeral=True)
         await interaction.response.send_modal(TitleModal())
 
@@ -192,9 +175,8 @@ class ConfigView(discord.ui.View):
         class DescModal(discord.ui.Modal, title="説明文の変更"):
             desc = discord.ui.TextInput(label="パネルの説明文", style=discord.TextStyle.paragraph, placeholder="説明文を入力してください")
             async def on_submit(self, idx: discord.Interaction):
-                d = load_data()
-                d["config"]["description"] = self.desc.value
-                save_data(d)
+                global _VENDING_DATA
+                _VENDING_DATA["config"]["description"] = self.desc.value
                 await idx.response.send_message("✏️ 説明文を更新しました！パネルを再作成すると反映されます。", ephemeral=True)
         await interaction.response.send_modal(DescModal())
 
@@ -203,9 +185,8 @@ class ConfigView(discord.ui.View):
         class ImageModal(discord.ui.Modal, title="画像URLの設定"):
             url = discord.ui.TextInput(label="画像のURL", placeholder="https://から始まるリンク（空欄で消去）", required=False)
             async def on_submit(self, idx: discord.Interaction):
-                d = load_data()
-                d["config"]["image_url"] = self.url.value
-                save_data(d)
+                global _VENDING_DATA
+                _VENDING_DATA["config"]["image_url"] = self.url.value
                 await idx.response.send_message("🖼️ 画像設定を更新しました！パネルを再作成すると反映されます。", ephemeral=True)
         await interaction.response.send_modal(ImageModal())
 
@@ -214,14 +195,13 @@ class ConfigView(discord.ui.View):
         class ProofModal(discord.ui.Modal, title="実績チャンネルの設定"):
             channel_id = discord.ui.TextInput(label="チャンネルID（数字のみ）", placeholder="例: 1511448796964454421", required=False)
             async def on_submit(self, idx: discord.Interaction):
-                d = load_data()
+                global _VENDING_DATA
                 if self.channel_id.value:
-                    d["config"]["proof_channel_id"] = self.channel_id.value
+                    _VENDING_DATA["config"]["proof_channel_id"] = self.channel_id.value
                     await idx.response.send_message("⭐ 実績ログの送信先と実績案内を設定しました！", ephemeral=True)
                 else:
-                    d["config"]["proof_channel_id"] = None
+                    _VENDING_DATA["config"]["proof_channel_id"] = None
                     await idx.response.send_message("⭐ 実績ログをオフにしました。", ephemeral=True)
-                save_data(d)
         await interaction.response.send_modal(ProofModal())
 
 # --- コマンド登録 ---
@@ -234,7 +214,7 @@ async def config_vending(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🔧 自販機 管理・設定メニュー",
         description="下のボタンを押して、在庫の追加やパネルの文字・画像を変更してください。\n※あなた（管理者）にしか見えません。",
-        color=discord.Color.green() # 緑固定
+        color=discord.Color.green()
     )
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
@@ -244,19 +224,17 @@ async def config_vending(interaction: discord.Interaction):
 async def create_vending(interaction: discord.Interaction):
     await interaction.response.send_message("⚙️ 自販機パネルを設置しました！", ephemeral=True)
     
-    data = load_data()
+    global _VENDING_DATA
     view = VendingView()
     
-    # 埋め込み作成（緑固定）
     embed = discord.Embed(
-        title=data["config"]["title"],
-        description=data["config"]["description"],
-        color=discord.Color.green() # 緑固定
+        title=_VENDING_DATA["config"]["title"],
+        description=_VENDING_DATA["config"]["description"],
+        color=discord.Color.green()
     )
     
-    # 在庫状況をフィールドとして一覧表示
-    if data["items"]:
-        for item, stocks in data["items"].items():
+    if _VENDING_DATA["items"]:
+        for item, stocks in _VENDING_DATA["items"].items():
             if stocks and stocks[0].startswith("無限:"):
                 embed.add_field(name=item, value="在庫数: `無限`", inline=False)
             else:
@@ -264,16 +242,14 @@ async def create_vending(interaction: discord.Interaction):
     else:
         embed.description += "\n\n※商品が未登録です。`/自販機設定` から追加してください。"
 
-    # 画像設定があれば反映
-    if data["config"].get("image_url"):
-        embed.set_image(url=data["config"]["image_url"])
+    if _VENDING_DATA["config"].get("image_url"):
+        embed.set_image(url=_VENDING_DATA["config"]["image_url"])
 
     await interaction.channel.send(embed=embed, view=view)
 
 
 @bot.event
 async def on_ready():
-    # 24時間起動後もボタンが動くように登録
     bot.add_view(VendingView())
     print(f"ログインしました: {bot.user.name}")
 
