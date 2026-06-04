@@ -3,9 +3,10 @@ from discord.ext import commands
 from discord import app_commands
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+import os  # ← これが抜けていたり、位置がズレているとクラッシュします！
 
 # --- 設定項目 ---
-TOKEN = os.getenv("DISCORD_TOKEN")  # ←こう書けばGitHubにパスワードがバレません！
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 GIFT_MESSAGE = (
     "使用方法等わからない場合はhttps://discord.com/channels/1503433355981488218/1511448796964454421 "
