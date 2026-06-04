@@ -5,7 +5,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 # --- 設定項目 ---
-TOKEN = "MTUxMTczMDc5ODE3MDk5Njg1OA.GePZN6.44MdPTAAnCG4gAzIlryoArGlsgaxTUir9Nii7A"
+TOKEN = os.getenv("DISCORD_TOKEN")  # ←こう書けばGitHubにパスワードがバレません！
 
 GIFT_MESSAGE = (
     "使用方法等わからない場合はhttps://discord.com/channels/1503433355981488218/1511448796964454421 "
